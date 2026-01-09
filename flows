@@ -1,1 +1,183 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "triggers": {
+      "When_a_new_response_is_submitted": {
+        "type": "ApiConnection",
+        "inputs": {
+          "host": {
+            "connection": {
+              "name": "@parameters('$connections')['shared_microsoftforms']['connectionId']"
+            }
+          },
+          "method": "post",
+          "path": "/forms/@{encodeURIComponent('Ficha de Inscrição – Colaborador')}/responses"
+        }
+      }
+    },
+    "actions": {
+      "Get_response_details": {
+        "type": "ApiConnection",
+        "runAfter": {},
+        "inputs": {
+          "host": {
+            "connection": {
+              "name": "@parameters('$connections')['shared_microsoftforms']['connectionId']"
+            }
+          },
+          "method": "get",
+          "path": "/forms/@{encodeURIComponent('Ficha de Inscrição – Colaborador')}/responses/@{triggerBody()?['responseId']}"
+        }
+      },
+
+      "Search_Process_Email": {
+        "type": "ApiConnection",
+        "runAfter": {
+          "Get_response_details": ["Succeeded"]
+        },
+        "inputs": {
+          "host": {
+            "connection": {
+              "name": "@parameters('$connections')['shared_office365']['connectionId']"
+            }
+          },
+          "method": "get",
+          "path": "/v3/Mail/Search",
+          "queries": {
+            "searchQuery": "from:@{body('Get_response_details')?['email']}",
+            "top": 5
+          }
+        }
+      },
+
+      "Filter_Email_With_File_Tag": {
+        "type": "Query",
+        "runAfter": {
+          "Search_Process_Email": ["Succeeded"]
+        },
+        "inputs": {
+          "from": "@body('Search_Process_Email')?['value']",
+          "where": "@contains(item()?['bodyPreview'], 'FICHEIRO_PROCESSO:')"
+        }
+      },
+
+      "Extract_File_Name": {
+        "type": "Compose",
+        "runAfter": {
+          "Filter_Email_With_File_Tag": ["Succeeded"]
+        },
+        "inputs": "@trim(last(split(first(body('Filter_Email_With_File_Tag'))?['body'], 'FICHEIRO_PROCESSO:')))"
+      },
+
+      "Get_Process_File": {
+        "type": "ApiConnection",
+        "runAfter": {
+          "Extract_File_Name": ["Succeeded"]
+        },
+        "inputs": {
+          "host": {
+            "connection": {
+              "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']"
+            }
+          },
+          "method": "get",
+          "path": "/datasets/@{encodeURIComponent('https://excederpt.sharepoint.com/sites/Recrutamento')}/files",
+          "queries": {
+            "$filter": "FileLeafRef eq '@{outputs('Extract_File_Name')}'"
+          }
+        }
+      },
+
+      "Condition_File_Found": {
+        "type": "If",
+        "runAfter": {
+          "Get_Process_File": ["Succeeded"]
+        },
+        "expression": {
+          "equals": [
+            "@length(body('Get_Process_File')?['value'])",
+            1
+          ]
+        },
+        "actions": {
+          "Normalize_Folder_Name": {
+            "type": "Compose",
+            "inputs": "@concat(first(split(body('Get_response_details')?['body/NomeCompleto'],' ')),' ',last(split(body('Get_response_details')?['body/NomeCompleto'],' ')))"
+          },
+
+          "Create_Main_Folder": {
+            "type": "ApiConnection",
+            "runAfter": {
+              "Normalize_Folder_Name": ["Succeeded"]
+            },
+            "inputs": {
+              "host": {
+                "connection": {
+                  "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']"
+                }
+              },
+              "method": "post",
+              "path": "/datasets/@{encodeURIComponent('https://excederpt.sharepoint.com/sites/Recrutamento')}/folders",
+              "body": {
+                "path": "@outputs('Normalize_Folder_Name')",
+                "library": "RH_Onboarding"
+              }
+            }
+          },
+
+          "Create_Subfolders": {
+            "type": "Foreach",
+            "runAfter": {
+              "Create_Main_Folder": ["Succeeded"]
+            },
+            "foreach": [
+              "01_Docs_Candidato",
+              "02_Forms",
+              "03_Contrato",
+              "04_Medicina",
+              "05_TI",
+              "06_Legal_Admin"
+            ],
+            "actions": {
+              "Create_Subfolder": {
+                "type": "ApiConnection",
+                "inputs": {
+                  "host": {
+                    "connection": {
+                      "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']"
+                    }
+                  },
+                  "method": "post",
+                  "path": "/datasets/@{encodeURIComponent('https://excederpt.sharepoint.com/sites/Recrutamento')}/folders",
+                  "body": {
+                    "path": "@{concat(outputs('Normalize_Folder_Name'),'/',items('Create_Subfolders'))}",
+                    "library": "RH_Onboarding"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "else": {
+          "actions": {
+            "Terminate_Error": {
+              "type": "Terminate",
+              "inputs": {
+                "runStatus": "Failed",
+                "message": "Ficheiro do processo não encontrado ou duplicado."
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "parameters": {
+    "$connections": {
+      "type": "Object",
+      "defaultValue": {}
+    }
+  }
+}
 
